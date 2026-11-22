@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Training an AI drone pilot in WebGPU — Ryan Carty</title>
+    <meta
+      name="description"
+      content="Thousands of simulated quadrotors learning to fly in the browser, trained with evolution strategies in WebGPU compute shaders."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d0e11'/%3E%3Cg fill='%237cc4ff'%3E%3Ccircle cx='13' cy='18.5' r='6.2'/%3E%3Ccircle cx='22.5' cy='11' r='4' fill-opacity='.75'/%3E%3Ccircle cx='23' cy='22' r='2.8' fill-opacity='.6'/%3E%3Ccircle cx='9' cy='8.5' r='2.2' fill-opacity='.5'/%3E%3Ccircle cx='16.5' cy='6.5' r='1.4' fill-opacity='.4'/%3E%3C/g%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="kit/demo/demo.css" />
+    <style>
+      :root {
+        --wrap: 1180px;
+      }
+      .stage {
+        position: relative;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+      #view {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 10;
+        max-height: 72vh;
+        touch-action: none;
+        cursor: grab;
+      }
+      #view:active {
+        cursor: grabbing;
+      }
+      .rate {
+        position: absolute;
+        left: 16px;
+        top: 12px;
+        font-size: 12px;
+        color: var(--muted);
+        pointer-events: none;
+      }
+      .hint {
+        position: absolute;
+        left: 16px;
+        bottom: 12px;
+        font-size: 12px;
+        color: var(--dim);
+        pointer-events: none;
+      }
+      .controls {
+        margin-top: 16px;
+      }
+      .sliders {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 28px;
+        margin-top: 14px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .sliders label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .sliders input {
+        width: 160px;
+        accent-color: var(--accent);
+      }
+      label.sel {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      select {
+        min-height: 44px;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid #343842;
+        border-radius: 8px;
+        padding: 0 10px;
+        font: inherit;
+        font-size: 14px;
+      }
+      .sliders output {
+        min-width: 52px;
+        color: var(--text);
+      }
+      .chart {
+        margin-top: 24px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px 16px 10px;
+      }
+      .chart canvas {
+        display: block;
+        width: 100%;
+        height: 180px;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 20px;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .legend span[style]::before {
+        content: '';
+        display: inline-block;
+        width: 14px;
+        height: 3px;
+        border-radius: 2px;
+        margin-right: 8px;
+        vertical-align: middle;
+        background: var(--c);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="top">
+      <div class="inner">
+        <a class="name" href="../index.html">Ryan Carty</a>
+        <nav aria-label="Main">
+          <a href="../index.html#work">Work</a
+          ><a href="../index.html#projects" aria-current="true">Projects</a
+          ><a href="../index.html#writing">Writing</a><a href="../index.html#contact">Contact</a
+          ><a href="https://github.com/rcarty">GitHub</a>
+        </nav>
+      </div>
+    </header>
+    <div class="wrap">
+      <section class="lead">
+        <h1>Training an AI drone pilot in WebGPU</h1>
+        <p>
+          Thousands of simulated quadrotors learning to fly to a target in 3D, trained on your GPU
+          in this page. Every generation, each drone flies a slightly different copy of the same
+          small neural network, and the network moves towards the copies that did best. The orange
+          drone flies the current network. Drag to look around.
+        </p>
+        <p>
+          I made this as a first step into mixing graphics with AI. I wanted to understand one of
+          the fundamentals, which is how a network can learn a task by trial and error.
+        </p>
+        <p class="nogpu">
+          This browser doesn't support WebGPU, so the demo can't run here. Recent Chrome, Edge,
+          Safari and Firefox all support it.
+        </p>
+      </section>
+
+      <div class="stage">
+        <canvas id="view" aria-label="Simulated drones flying towards a target"></canvas>
+        <div class="rate mono" id="rate"></div>
+        <div class="hint mono">Drag to orbit · scroll to zoom</div>
+      </div>
+
+      <div class="controls">
+        <button type="button" class="btn primary" id="train">Pause</button>
+        <div class="seg" role="group" aria-label="Training speed">
+          <button type="button" data-speed="real" aria-pressed="false">Real time</button>
+          <button type="button" data-speed="fast" aria-pressed="true">Fast</button>
+          <button type="button" data-speed="fastest" aria-pressed="false">Fastest</button>
+        </div>
+        <button type="button" class="btn" id="watch">Fly the policy</button>
+        <button type="button" class="btn" id="restart">Start over</button>
+        <label class="sel"
+          >Drones
+          <select id="drones">
+            <option value="512">512</option>
+            <option value="1024">1,024</option>
+            <option value="2048">2,048</option>
+            <option value="4096">4,096</option>
+            <option value="8192">8,192</option>
+            <option value="16384">16,384</option>
+          </select>
+        </label>
+      </div>
+      <div class="sliders">
+        <label
+          >Noise
+          <input type="range" id="sigma" min="0.01" max="0.2" step="0.01" value="0.05" />
+          <output id="sigma-out" class="mono"></output>
+        </label>
+        <label
+          >Learning rate
+          <input type="range" id="lr" min="0.005" max="0.1" step="0.005" value="0.03" />
+          <output id="lr-out" class="mono"></output>
+        </label>
+        <label
+          >Gusts
+          <input type="range" id="wind" min="0" max="3" step="0.1" value="1" />
+          <output id="wind-out" class="mono"></output>
+        </label>
+        <label
+          >Mass variation
+          <input type="range" id="mass" min="0" max="40" step="5" value="20" />
+          <output id="mass-out" class="mono"></output>
+        </label>
+        <label
+          >Power in one motor
+          <input type="range" id="fault" min="40" max="100" step="5" value="100" />
+          <output id="fault-out" class="mono"></output>
+        </label>
+      </div>
+      <div class="status mono" id="status" role="status"></div>
+
+      <div class="chart">
+        <div class="legend">
+          <span style="--c: #ff9f5a">Current network</span>
+          <span style="--c: #3f6c94">Median of the population</span>
+          <span>Average distance from the target over an episode</span>
+        </div>
+        <canvas id="chart" aria-label="Distance to the target by generation"></canvas>
+      </div>
+
+      <section class="notes">
+        <div>
+          <h3>The environment</h3>
+          <p>
+            Each drone is a rigid quadrotor with four motors. It sees the target, its velocity,
+            which way is up and its spin, all in its own body frame, and sets the thrust of each
+            motor. Thrust points along the body, so to move sideways it has to lean, and to stop it
+            has to lean the other way.
+          </p>
+          <p>
+            An episode is six seconds and the target moves halfway through. Every drone gets its own
+            mass and its own gusts, so the network has to cope with all of them. Drones that leave
+            the arena are out for the rest of the episode.
+          </p>
+        </div>
+        <div>
+          <h3>Training</h3>
+          <p>
+            Training uses evolution strategies (Salimans et al., 2017). The network has 548 weights.
+            Each generation adds random noise to them for every pair of drones, one with the noise
+            added and one with it subtracted, so both see the same start and the same gusts. Scores
+            are turned into ranks, and the ranked noise gives an estimate of which way to move the
+            weights. Adam takes the step.
+          </p>
+          <p>
+            There's no backpropagation anywhere. Every pass is a forward pass, which is why the
+            whole thing fits in a few compute shaders.
+          </p>
+        </div>
+        <div>
+          <h3>The controls</h3>
+          <p>
+            Noise is how far each copy strays from the current network, and the learning rate is how
+            far the network moves each generation. Turn either up far enough and training falls
+            apart. More drones give a steadier estimate per generation.
+          </p>
+          <p>
+            Gusts and mass variation apply in training and when flying, and are fixed for each drone
+            when it starts. The motor slider only applies when you fly the policy. It weakens one
+            motor on every drone, which the network never saw in training.
+          </p>
+        </div>
+        <div>
+          <h3>On the GPU</h3>
+          <p>
+            One thread per drone steps the physics and runs the network, with the weights for every
+            drone in one buffer. The scores are ranked with the key-value radix sort from the
+            <a href="../rc-gpu-sort/index.html">sorting demo</a>, and an update pass uses one
+            workgroup per weight to sum the ranked noise and apply Adam.
+          </p>
+          <p>
+            The noise is never stored. Both passes regenerate it from a hash of the generation, the
+            pair and the weight index. Nothing comes back to the CPU except the scores for the
+            chart.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="src/main.js"></script>
+    <script
+      data-goatcounter="https://rcarty.goatcounter.com/count"
+      async
+      src="https://gc.zgo.at/count.js"
+    ></script>
+  </body>
+</html>
